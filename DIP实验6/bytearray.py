@@ -1,9 +1,13 @@
 # 编程对图片bridge.bmp和web.bmp进行压缩
 # 1.	采用哈夫曼编码，实现压缩和解压缩
+# 2.	采用无损预测编码，并对误差进行哈夫曼编码，实现压缩和解压缩（该小题选做）
+# 3.	用平均均方误差的平方根（如下），对解压缩后的图像和原图进行比较，并计算压缩比
 import cv2
 import numpy as np
 from collections import Counter
 import heapq  # 堆
+from tqdm import tqdm
+import time
 
 # -----------------------------------计算频率并构建哈夫曼树-------------------------------
 # 定义哈夫曼树节点
@@ -94,6 +98,7 @@ def calculate_frequency(img):
     # {像素值：出现频率}
     return Counter(img.flatten())
 
+# --------------------------------- 正常哈夫曼编码，实现压缩 ---------------------------------
 
 # 对图片进行压缩
 def huffman_compress(img):
@@ -110,24 +115,40 @@ def huffman_compress(img):
     # 压缩图片成为二进制字节数组
     compressed_data, padding = compress_image(img, codes)
 
-    # # 计算原始图像大小（字节数）
-    # original_size = img.size  # 像素总数（灰度图每个像素1字节）
-    #
-    # # 压缩后数据大小（字节数）
-    # compressed_size = len(compressed_data)  # 字节数组的长度
-    #
-    # # 计算压缩比
-    # compression_ratio = original_size / compressed_size
-    #
-    # print(f"Original size: {original_size} bytes")
-    # print(f"Compressed size: {compressed_size} bytes")
-    # print(f"Compression Ratio: {compression_ratio:.2f}")
+    return compressed_data, codes, padding, img.shape
 
-    return compressed_data, codes, padding, huffman_tree
+# --------------------------------- 无损预测编码压缩 ---------------------------------
+def predict_and_encode(img):
+    height, width = img.shape
+    # 初始化误差数组
+    # 默认是np.uint8 不支持负数 转为dtype=np.int32
+    errors = np.zeros_like(img, dtype=np.int32)
+
+    for i in range(height):
+        for j in range(width):
+            if(j == 0):
+                errors[i, j] = int(img[i, j])
+            else:
+                # 使用前一个像素值进行预测
+                # errors[i, j] = img[i, j] - img[i, j-1]
+                # img 通常是 np.uint8 类型，这种类型只能存储 0 到 255 的值，不能表示负数。产生溢出会变成一个很大的正数。
+                errors[i, j] = int(int(img[i, j]) - int(img[i, j - 1]))
+
+    return errors
+
+def huffman_predict_compress(img):
+    shape = img.shape
+    errors = predict_and_encode(img)
+    frequencies = calculate_frequency(errors)
+    tree = build_huffman_tree(frequencies)
+    codes = generate_codes(tree)
+    compress_data, padding = compress_image(img, codes)
+    return compress_data, codes, padding, shape
 
 
-# --------------------------------------------解压缩图片--------------------------------------
-def huffman_decompress(compressed_data, codes, padding, original_shape):
+
+# --------------------------------数据解压缩----------------------------------
+def decompress_img(compressed_data, codes, padding, original_shape):
     # 将字节流转换为位流  :08b是bytes格式化为8位二进制前面补0
     # 压缩时候每个字节转成数字二进制的时候 前面的0会省去
     bit_string = ''.join(f'{byte:08b}' for byte in compressed_data)
@@ -153,12 +174,42 @@ def huffman_decompress(compressed_data, codes, padding, original_shape):
 
     # 这时候decoded_pixels 已经是一个图像了 只不过是一维的
 
-    # 打印解码后像素的数量
-    print(f"Decoded pixels length: {len(decoded_pixels)}")
+    # # 打印解码后像素的数量
+    # print(f"Decoded pixels length: {len(decoded_pixels)}")
 
     # 还原图片
     img = np.array(decoded_pixels).reshape(original_shape)
     return img
+
+# --------------------------正常huffman & 无损预测编码解压缩---------------------------
+def huffman_decompress(compressed_data, codes, padding, original_shape):
+    return decompress_img(compressed_data, codes, padding, original_shape)
+
+
+def predict_decompress(compressed_data, codes, padding, original_shape):
+    errors = decompress_img(compressed_data, codes, padding, original_shape)
+    img = np.zeros_like(errors, dtype=np.int32)
+    height, width = original_shape
+
+    for i in range(height):
+        for j in range(width):
+            if j == 0:
+                img[i, j] = errors[i, j]
+            else:
+                img[i, j] = errors[i, j] + img[i, j-1]
+    # 从np.int32 转到 np.uint8 不然不是正常图片格式
+    img = img.astype(np.uint8)
+    # img = np.clip(img, 0, 255).astype(np.uint8)
+    return img
+
+
+# ----------------------------------------性能比较-----------------------------------
+# 计算平均均方误差（RMSE）
+def calculate_rmse(original_image, decompressed_image):
+    # 计算每个像素的平方误差
+    mse = np.mean((original_image - decompressed_image) ** 2)
+    rmse = np.sqrt(mse)  # 取平方根
+    return rmse
 
 # ---------------------------------------------测试图片-----------------------------------
 def test_photo(filename):
@@ -166,25 +217,65 @@ def test_photo(filename):
     # 读取
     image = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
 
-    print(f"开始压缩图像:{filename}")
+    # -------------------- 正常哈夫曼编码 --------------------
+    print(f"======== 正常哈夫曼编码 ========")
+    print(f"开始压缩图像（正常哈夫曼编码）: {filename}")
     # 压缩图像
-    compressed_data, codes, padding, tree = huffman_compress(image)
-    print(f"压缩图像完毕:{filename}")
+    compressed_data, codes, padding, shape = huffman_compress(image)
+    print(f"压缩图像完毕（正常哈夫曼编码）: {filename}")
 
-    print(f"开始解压图像数据:{filename}")
+    print(f"开始解压图像数据（正常哈夫曼编码）: {filename}")
     # 解压图像
-    decompressed_image = huffman_decompress(compressed_data, codes, padding, image.shape)
-    print(f"解压图像数据完毕:{filename}")
+    decompressed_image_huffman = huffman_decompress(compressed_data, codes, padding, shape)
+    print(f"解压图像数据完毕（正常哈夫曼编码）: {filename}")
 
-    print(f"显示图像压缩解压前后效果:{filename}")
+    # 计算压缩比
+    original_size = image.size  # 原始图像大小（以像素计）
+    compressed_size = len(compressed_data)  # 压缩后数据大小（字节数）
+    compression_ratio_huffman = original_size / compressed_size  # 压缩比
+
+    # 计算RMSE
+    rmse_huffman = calculate_rmse(image, decompressed_image_huffman)
+
+    # 输出结果
+    print(f"Original size: {original_size} pixels")
+    print(f"Compressed size: {compressed_size} bytes")
+    print(f"Compression Ratio: {compression_ratio_huffman:.2f}")
+    print(f"RMSE: {rmse_huffman:.2f}")
+
+    # -------------------- 无损预测编码 --------------------
+    print(f"======== 无损预测编码 ========")
+    print(f"开始压缩图像（无损预测编码）: {filename}")
+    compressed_data_pred, codes_pred, padding_pred, shape_pred = huffman_predict_compress(image)
+    print(f"压缩图像完毕（无损预测编码）: {filename}")
+
+    print(f"开始解压图像数据（无损预测编码）: {filename}")
+    # 解压图像
+    decompressed_image_predict = predict_decompress(compressed_data_pred, codes_pred, padding_pred, shape_pred)
+    print(f"解压图像数据完毕（无损预测编码）: {filename}")
+
+    # 计算压缩比
+    compressed_size_pred = len(compressed_data_pred)  # 压缩后数据大小（字节数）
+    compression_ratio_predict = original_size / compressed_size_pred  # 压缩比
+
+    # 计算RMSE
+    rmse_predict = calculate_rmse(image, decompressed_image_predict)
+
+    # 输出结果
+    print(f"Original size: {original_size} pixels")
+    print(f"Compressed size: {compressed_size_pred} bytes")
+    print(f"Compression Ratio: {compression_ratio_predict:.2f}")
+    print(f"RMSE: {rmse_predict:.2f}")
+
     # 显示解压后的图像
     cv2.imshow("Original Image", image)
-    cv2.imshow("Decompressed Image", decompressed_image)
+    cv2.imshow("Decompressed Image (Huffman)", decompressed_image_huffman)
+    cv2.imshow("Decompressed Image (Predict)", decompressed_image_predict)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     return
 
 
 if __name__ == "__main__":
-    test_photo('bridge.bmp')
-    # test_photo('web.bmp')
+    # test_photo('bridge.bmp')
+    test_photo('web.bmp')
