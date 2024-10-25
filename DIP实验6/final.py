@@ -46,6 +46,12 @@ def build_huffman_tree(frequencies):
     # 返回根结点
     return heap[0]
 
+# 计算频率
+def calculate_frequency(img):
+    # Counter(...)：collections 模块中的一个类，专门用于统计可哈希对象的出现次数。
+    # {像素值：出现频率}
+    return Counter(img.flatten())
+
 # 生成哈夫曼编码
 def generate_codes(node, code="", codes={}):
     # 不为空
@@ -69,12 +75,6 @@ def compress_image(img, codes):
 
     # 返回比特流
     return compressed_data
-
-# 计算频率
-def calculate_frequency(img):
-    # Counter(...)：collections 模块中的一个类，专门用于统计可哈希对象的出现次数。
-    # {像素值：出现频率}
-    return Counter(img.flatten())
 
 # --------------------------------- 正常哈夫曼编码，实现压缩 ---------------------------------
 
